@@ -104,13 +104,40 @@ def linux_device_capabilities() -> DeviceCapabilities:
     if Device.DEFAULT == "CUDA" or Device.DEFAULT == "NV" or Device.DEFAULT=="GPU":
         import pynvml, pynvml_utils
         pynvml.nvmlInit()
-        handle = pynvml.nvmlDeviceGetHandleByIndex(0)
-        gpu_name = pynvml.nvmlDeviceGetName(handle)
-        gpu_memory_info = pynvml.nvmlDeviceGetMemoryInfo(handle)
 
-        if DEBUG >= 2: print(f"NVIDIA device {gpu_name=} {gpu_memory_info=}")
+        try:
+            handle = pynvml.nvmlDeviceGetHandleByIndex(0)
+            gpu_name = pynvml.nvmlDeviceGetName(handle)
+            gpu_memory_info = pynvml.nvmlDeviceGetMemoryInfo(handle)
 
-        return DeviceCapabilities(model=f"Linux Box ({gpu_name})", chip=gpu_name, memory=gpu_memory_info.total // 2**20, flops=CHIP_FLOPS.get(gpu_name, DeviceFlops(fp32=0, fp16=0, int8=0)))
+            if DEBUG >= 2: print(f"NVIDIA device {gpu_name=} {gpu_memory_info=}")
+
+            return DeviceCapabilities(model=f"Linux Box ({gpu_name})", chip=gpu_name, memory=gpu_memory_info.total // 2**20, flops=CHIP_FLOPS.get(gpu_name, DeviceFlops(fp32=0, fp16=0, int8=0)))
+        except pynvml.nvml.NVMLError_NotSupported:
+            import os, re
+
+            # Check for an integrated GPU
+            if os.path.exists("/dev/nvhost-gpu"):
+                with open("/sys/firmware/devicetree/base/model") as f:
+                    gpu_name = f.read().strip()
+
+                # Get system memory
+                with open("/proc/meminfo") as f:
+                    meminfo = {}
+                    for line in f.readlines():
+                        if match := re.match(r"^(.+):\s*(\d+)([^B]+)B$", line.strip()):
+                            category, size, units = match.groups()
+                            units = units.strip()
+                            size = int(size)
+                            if units == "k":
+                                size *= 1000
+
+                            meminfo[category] = size
+
+                return DeviceCapabilities(model=f"Linux Box ({gpu_name})", chip=gpu_name, memory=meminfo["MemAvailable"] // 2**20, flops=DeviceFlops(fp32=5.3*TFLOPS, fp16=11*TFLOPS, int8=275))
+
+            raise RuntimeError("No supported Linux GPU detected")
+
     elif Device.DEFAULT == "AMD":
         # TODO AMD support
         return DeviceCapabilities(model="Linux Box (AMD)", chip="Unknown AMD", memory=psutil.virtual_memory().total // 2**20, flops=DeviceFlops(fp32=0, fp16=0, int8=0))
